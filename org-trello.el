@@ -915,19 +915,25 @@ Levels:
 (require 'queue)
 
 (defun orgtrello/--org-map-bfs-tree (fn queue-entities)
-  (let ((node (queue-dequeue queue-entities)))
-    (when node
-          (let ((position (gethash :position node)))
-            (message "entry '%s'" (gethash :title node))
-            ;; execute the function on the first element of the list
-            (goto-char position)
-            (funcall fn)
-            ;; now update the queue with the children of the current node
-            (when (outline-next-heading)                                           ;; first children
-                  (queue-enqueue queue-entities (orgtrello/--get-current-entry))   ;; adding it to the queue
-                  (while (outline-get-next-sibling)
-                    (queue-enqueue queue-entities (orgtrello/--get-current-entry)))) ;; with all its siblings
-            (orgtrello/--org-map-bfs-tree fn queue-entities)))))
+  (message "size before: %s" (length queue-entities))
+  (let* ((queue-intern queue-entities)
+         (orgtrello/--org-map-bfs-tree--position (queue-dequeue queue-intern)))
+    (message "size after: %s" (length queue-intern))
+    (when orgtrello/--org-map-bfs-tree--position
+          ;; execute the function on the first element of the list
+          (goto-char orgtrello/--org-map-bfs-tree--position)
+          (funcall fn)
+          ;; now update the queue with the children of the current node
+          (when (outline-next-heading)                                                           ;; first children
+                (queue-enqueue queue-intern (gethash :position (orgtrello/--get-current-entry))) ;; adding it to the queue
+                (while (outline-get-next-sibling)
+                  (queue-enqueue queue-intern (gethash :position (orgtrello/--get-current-entry))))) ;; with all its siblings
+          (orgtrello/--org-map-bfs-tree fn queue-intern))))
+
+;; (setq queue-init (queue-create))
+;; (queue-enqueue queue-init 1)
+;; (queue-length queue-init)
+;; (queue-dequeue queue-init)
 
 (defun orgtrello/org-map-bfs-tree (fun)
   "org-map breadth-first-search - Call FUN for every heading."
@@ -935,7 +941,7 @@ Levels:
     ;; get back to the top
     (org-back-to-heading)
     (let ((queue-init (queue-create)))
-      (queue-enqueue queue-init (orgtrello/--get-current-entry))
+      (queue-enqueue queue-init (gethash :position (orgtrello/--get-current-entry)))
       ;; retrieve the first metadata and add it to the queue
       (orgtrello/--org-map-bfs-tree fun queue-init))))
 
