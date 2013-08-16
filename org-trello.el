@@ -534,7 +534,7 @@ Levels:
 (defun orgtrello-proxy/--get (http-con query-map &optional buffer-metadata standard-callback-fn sync)
   "GET on trello with the callback"
   (let ((buffer-name (second buffer-metadata)))
-    (orgtrello-query/http-trello (trace query-map) sync (when standard-callback-fn (funcall standard-callback-fn buffer-name)))))
+    (orgtrello-query/http-trello query-map sync (when standard-callback-fn (funcall standard-callback-fn buffer-name)))))
 
 (defun orgtrello-proxy/--post-or-put (http-con query-map &optional buffer-metadata standard-callback sync)
   "POST/PUT"
@@ -567,9 +567,9 @@ Levels:
   (orgtrello-log/msg 5 "Proxy: Request received. Transmitting...")
   (let* ((query-map-wrapped    (orgtrello-proxy/--extract-trello-query http-con))
          (position             (assoc-default 'position query-map-wrapped))
-         (buffer-name          (trace (assoc-default 'buffername query-map-wrapped) :buff))
+         (buffer-name          (assoc-default 'buffername query-map-wrapped))
          (standard-callback    (assoc-default 'callback query-map-wrapped))
-         (standard-callback-fn (trace (when standard-callback (symbol-function (intern standard-callback))) :intern)) ;; the callback is passed as a string, we want it as a function when defined
+         (standard-callback-fn (when standard-callback (symbol-function (intern standard-callback)))) ;; the callback is passed as a string, we want it as a function when defined
          (query-map            (orgtrello-proxy/--compute-trello-query query-map-wrapped))
          (method               (orgtrello-query/--method query-map))
          (fn-dispatch          (orgtrello-proxy/--dispatch-http-query method)))
@@ -652,7 +652,6 @@ Levels:
 
 (defun orgtrello/--control-properties ()
   "org-trello needs the properties board-id and all list id from the trello board to be setuped on header property file. Returns :ok if everything is ok, or the error message if problems."
-  (message "listname: %S\nhmap: %S\norgfp: %S" *HMAP-ID-NAME* *LIST-NAMES* org-file-properties)
   (let ((orgtrello/--hmap-count (hash-table-count *HMAP-ID-NAME*)))
     (if (and org-file-properties
              (assoc-default *BOARD-ID* org-file-properties)
