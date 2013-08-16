@@ -5,7 +5,7 @@
 ;; Author: Antoine R. Dumont <eniotna.t AT gmail.com>
 ;; Maintainer: Antoine R. Dumont <eniotna.t AT gmail.com>
 ;; Version: 0.1.2
-;; Package-Requires: ((org "8.0.7") (dash "1.5.0") (request "0.2.0") (cl-lib "0.3.0") (json "1.2") (elnode "0.9.9.7.6"))
+;; Package-Requires: ((org "8.0.7") (dash "1.5.0") (request "0.2.0") (cl-lib "0.3.0") (json "1.2") (elnode "0.9.9.7.6") (queue "0.1"))
 ;; Keywords: org-mode trello sync org-trello
 ;; URL: https://github.com/ardumont/org-trello
 
@@ -71,6 +71,7 @@
   (require 'org-trello)
   (setq *ORGTRELLO-CHECKLIST-UPDATE-ITEMS* nil)")
 
+(setq *ORGTRELLO-CHECKLIST-UPDATE-ITEMS* nil)
 (defvar *consumer-key*     nil "Id representing the user")
 (defvar *access-token*     nil "Read/write Access token to use trello in the user's name ")
 
@@ -143,21 +144,23 @@ Levels:
 
 (defun orgtrello-data/extract-identifier (point)
   "Extract the identifier from the point."
-  (org-entry-get point *ORGTRELLO-ID*))
+  (save-excursion
+    (org-entry-get point *ORGTRELLO-ID*)))
 
 (defun orgtrello-data/metadata ()
   "Compute the metadata from the org-heading-components entry, add the identifier and extract the metadata needed."
-  (let* ((orgtrello-data/metadata--point       (point))
-         (orgtrello-data/metadata--id          (orgtrello-data/extract-identifier orgtrello-data/metadata--point))
-         (orgtrello-data/metadata--due         (orgtrello-data/--convert-orgmode-date-to-trello-date (org-entry-get orgtrello-data/metadata--point "DEADLINE")))
-         (orgtrello-data/metadata--buffer-name (buffer-name))
-         (orgtrello-data/metadata--metadata (org-heading-components)))
-    (->> orgtrello-data/metadata--metadata
-         (cons orgtrello-data/metadata--due)
-         (cons orgtrello-data/metadata--id)
-         (cons orgtrello-data/metadata--point)
-         (cons orgtrello-data/metadata--buffer-name)
-         orgtrello-data/--get-metadata)))
+  (save-excursion
+    (let* ((orgtrello-data/metadata--point       (point))
+           (orgtrello-data/metadata--id          (orgtrello-data/extract-identifier orgtrello-data/metadata--point))
+           (orgtrello-data/metadata--due         (orgtrello-data/--convert-orgmode-date-to-trello-date (org-entry-get orgtrello-data/metadata--point "DEADLINE")))
+           (orgtrello-data/metadata--buffer-name (buffer-name))
+           (orgtrello-data/metadata--metadata (org-heading-components)))
+      (->> orgtrello-data/metadata--metadata
+           (cons orgtrello-data/metadata--due)
+           (cons orgtrello-data/metadata--id)
+           (cons orgtrello-data/metadata--point)
+           (cons orgtrello-data/metadata--buffer-name)
+           orgtrello-data/--get-metadata))))
 
 (defun orgtrello-data/--parent-metadata ()
   "Extract the metadata from the current heading's parent."
@@ -469,10 +472,8 @@ Levels:
 (setq *ORGTRELLO-PROXY-PORT* *ORGTRELLO-PROXY-DEFAULT-PORT*)
 
 (defun orgtrello-proxy/http (query-map &optional sync success-callback error-callback)
-  "Query the trello api asynchronously."
-  (orgtrello-log/msg 5 "Request to trello server to wrap: %S" query-map)
   (let ((query-map-proxy (orgtrello-hash/make-hash "POST" "/" query-map)))
-    (orgtrello-log/msg 5 "Request to proxy wrapped: %S" query-map-proxy)
+    (orgtrello-log/msg 5 "client - Request to proxy wrapped: %S" query-map-proxy)
     (orgtrello-query/--http *ORGTRELLO-PROXY-URL* query-map-proxy sync success-callback error-callback)))
 
 (defvar orgtrello-query/--app-routes '(;; proxy routine
@@ -851,43 +852,92 @@ Levels:
         (puthash :buffername buffer-name                           query-map))
   query-map)
 
+;; (defun orgtrello/--ensure-hierarchy-is-synchronized (parent-entry)
+;;   "Check if the entry owns an id, if not, create the entry by synchronizing over http."
+;;   (while (not (orgtrello-data/extract-identifier (gethash :position parent-entry)))
+;;     (message "You need to sync the parent entry %S first!" (orgtrello-data/extract-identifier (gethash :position parent-entry)))
+;;     (sleep-for 1)))
+;; if the need to create an entry is real, the request must be sync
+
+(defun orgtrello/--sync-entry (current-entry parent-entry &optional grandparent-entry sync)
+  "Given an entry-metadata, execute the request to sync it."
+  (let* ((query-http-or-error-msg (orgtrello/--dispatch-create current-entry parent-entry grandparent-entry)))
+    (if (hash-table-p query-http-or-error-msg)
+        ;; if it's a hash-table we can do the sync
+        (progn
+          ;; we enrich the trello query with some org/org-trello metadata (the proxy will deal with them later)
+          ;; and execute the request
+          (orgtrello-proxy/http (orgtrello/--update-query-with-org-metadata query-http-or-error-msg current-entry) sync)
+          "Synchronizing simple entity done!")
+        ;; else it's a string to display
+        query-http-or-error-msg)))
+
 (defun orgtrello/do-create-simple-entity (&optional sync)
   "Do the actual simple creation of a card, checklist or task. Optionally, we can render the creation synchronous."
-  (let* ((entry-metadata (orgtrello-data/entry-get-full-metadata))
-         (current-entry  (gethash :current entry-metadata)))
-    (if entry-metadata
-        (let ((query-http-or-error-msg (orgtrello/--dispatch-create current-entry (gethash :parent entry-metadata) (gethash :grandparent entry-metadata))))
-          (if (hash-table-p query-http-or-error-msg)
-              ;; if it's a hash-table we can do the sync
-              (progn
-                ;; we enrich the trello query with some org/org-trello metadata (the proxy will deal with them later)
-                ;; and execute the request
-                (orgtrello-proxy/http (orgtrello/--update-query-with-org-metadata query-http-or-error-msg current-entry) sync)
-                "Synchronizing simple entity done!")
-            ;; else it's a string to display
-            query-http-or-error-msg)))))
+  (let* ((entry-metadata    (orgtrello-data/entry-get-full-metadata))
+         (current-entry     (gethash :current entry-metadata)))
+    (when entry-metadata
+          (orgtrello-log/msg 5 "Creating simple entity '%S'" entry-metadata)
+          ;; ensure the hierarchy is sync when not in a card level
+          ;; (when (< 1 (gethash :level current-entry))
+          ;;       (orgtrello/--ensure-hierarchy-is-synchronized (gethash :parent entry-metadata)))
+          (let ((new-entry-metadata (orgtrello-data/entry-get-full-metadata)))
+            (orgtrello/--sync-entry (gethash :current new-entry-metadata) (gethash :parent new-entry-metadata) (gethash :grandparent new-entry-metadata))))))
 
 (defun orgtrello/--board-name ()
   "Compute the board's name"
   (assoc-default *BOARD-NAME* org-file-properties))
-
-(defun orgtrello/--do-sync-entity (level &optional sync)
-  "Sync the entity if the level corresponds to level."
-  (let ((current-entry (orgtrello-data/metadata)))
-    (when (= level (orgtrello/--level current-entry))
-          (orgtrello/do-create-simple-entity sync))))
 
 (defun orgtrello/do-create-complex-entity ()
   "Do the actual full card creation - from card to task. Beware full side effects..."
   (let ((orgtrello/--board-name-to-sync (orgtrello/--board-name)))
     (orgtrello-log/msg 3 "Synchronizing full entity with its structure on board '%s'..." orgtrello/--board-name-to-sync)
     ;; iterate over the map of entries and sync them, breadth first
-    (dolist (l '(1 2 3))
-      (lexical-let ((level l))
-        (org-map-tree (lambda ()
-                        (message "level: %d" level)
-                        (orgtrello/--do-sync-entity level (= 1 level)))))) ;; level 1 is synchronous
+    (orgtrello/org-map-bfs-tree 'orgtrello/do-create-simple-entity)
     (format "Synchronizing full entity with its structure on board '%s' - done" orgtrello/--board-name-to-sync)))
+
+;; (defun org-map-tree (fun)
+;;   "Call FUN for every heading underneath the current one."
+;;   (org-back-to-heading)
+;;   (let ((level (funcall outline-level)))
+;;     (save-excursion
+;;       (funcall fun)
+;;       (while (and (progn
+;; 		    (outline-next-heading)
+;; 		    (> (funcall outline-level) level))
+;; 		  (not (eobp)))
+;; 	(funcall fun)))))
+
+(defun orgtrello/--get-current-entry ()
+  "Compute the current position's metadata"
+  (gethash :current (orgtrello-data/entry-get-full-metadata)))
+
+(require 'queue)
+
+(defun orgtrello/--org-map-bfs-tree (fn queue-entities)
+  (let ((node (queue-dequeue queue-entities)))
+    (when node
+          (let ((position (gethash :position node)))
+            (message "entry '%s'" (gethash :title node))
+            ;; execute the function on the first element of the list
+            (goto-char position)
+            (funcall fn)
+            ;; now update the queue with the children of the current node
+            (when (outline-next-heading)                                           ;; first children
+                  (queue-enqueue queue-entities (orgtrello/--get-current-entry))   ;; adding it to the queue
+                  (while (outline-get-next-sibling)
+                    (queue-enqueue queue-entities (orgtrello/--get-current-entry)))) ;; with all its siblings
+            (orgtrello/--org-map-bfs-tree fn queue-entities)))))
+
+(defun orgtrello/org-map-bfs-tree (fun)
+  "org-map breadth-first-search - Call FUN for every heading."
+  (save-excursion
+    ;; get back to the top
+    (org-back-to-heading)
+    (let ((queue-init (queue-create)))
+      (queue-enqueue queue-init (orgtrello/--get-current-entry))
+      ;; retrieve the first metadata and add it to the queue
+      (orgtrello/--org-map-bfs-tree fun queue-init))))
 
 (defun orgtrello/do-sync-full-file ()
   "Full org-mode file synchronisation. Beware, this will block emacs as the request is synchronous."
